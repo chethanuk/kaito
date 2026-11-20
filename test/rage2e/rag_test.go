@@ -25,7 +25,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -487,7 +486,7 @@ func createConfigForWorkspace(workspaceObj *kaitov1beta1.Workspace) {
 	// }
 
 	By("Creating config file", func() {
-		cm := corev1.ConfigMap{
+		cm := v1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "inference-config",
 				Namespace: workspaceObj.Namespace,

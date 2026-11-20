@@ -52,7 +52,6 @@ import (
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
 	kaitov1alpha1 "github.com/kaito-project/kaito/api/v1alpha1"
-	"github.com/kaito-project/kaito/api/v1beta1"
 	kaitov1beta1 "github.com/kaito-project/kaito/api/v1beta1"
 	"github.com/kaito-project/kaito/internal/cache"
 	"github.com/kaito-project/kaito/internal/estimator/nodesestimator"
@@ -367,7 +366,7 @@ func (c *WorkspaceReconciler) validateExistingModelMirror(wObj *kaitov1beta1.Wor
 			reason: reasonModelMirrorCreateFailed,
 			err: fmt.Errorf("ModelMirror %s in namespace %s uses StorageClass %q but this workspace requires %q; "+
 				"delete the existing ModelMirror or align the %s annotation",
-				crName, existing.Namespace, got, want, v1beta1.AnnotationModelMirrorStorageClass),
+				crName, existing.Namespace, got, want, kaitov1beta1.AnnotationModelMirrorStorageClass),
 		}
 	}
 	return nil
@@ -1779,7 +1778,7 @@ func (c *WorkspaceReconciler) UpdateWorkspaceTargetNodeCount(ctx context.Context
 		if err := resources.UpdateStatusWithRetry(ctx, c.Client, client.ObjectKey{Name: wObj.Name, Namespace: wObj.Namespace}, func(obj *kaitov1beta1.Workspace) error {
 			status := &obj.Status
 			if wObj.Inference != nil {
-				if v1beta1.GetWorkspaceRuntimeName(wObj) == pkgmodel.RuntimeNameVLLM {
+				if kaitov1beta1.GetWorkspaceRuntimeName(wObj) == pkgmodel.RuntimeNameVLLM {
 					targetNodeCount, err = c.Estimator.EstimateNodeCount(ctx, req, c.Client)
 					if err != nil {
 						return fmt.Errorf("failed to calculate target node count: %w", err)
