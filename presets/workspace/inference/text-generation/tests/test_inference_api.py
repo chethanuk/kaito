@@ -311,14 +311,26 @@ def test_get_metrics_no_gpus(configured_app):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def local_model_app(tmp_path_factory):
-    """Load model to a local path and start the server with --served_model_name,
-    simulating the e2e flow where weights are pre-downloaded."""
-    from huggingface_hub import snapshot_download
+def _local_weights(repo_id):
+    """Return the HF cache snapshot for repo_id, downloading only on a cache miss.
 
-    local_dir = str(tmp_path_factory.mktemp("weights"))
-    snapshot_download("HuggingFaceTB/SmolLM2-135M-Instruct", local_dir=local_dir)
+    Reading the cache first keeps a warm cache off the network, so Hub rate
+    limits (429) cannot fail the fixture.
+    """
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    try:
+        return snapshot_download(repo_id, local_files_only=True)
+    except LocalEntryNotFoundError:  # includes IncompleteSnapshotError
+        return snapshot_download(repo_id)
+
+
+@pytest.fixture(scope="module")
+def local_model_app():
+    """Load model from a local snapshot path and start the server with --served_model_name,
+    simulating the e2e flow where weights are pre-downloaded."""
+    local_dir = _local_weights("HuggingFaceTB/SmolLM2-135M-Instruct")
 
     original_argv = sys.argv.copy()
     sys.argv = [
@@ -371,3 +383,69 @@ def test_served_model_name_in_chat_completions(local_model_app):
     ):
         response = client.post("/v1/chat/completions", json=request_data)
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "tree_files,expect_error",
+    [
+        pytest.param(None, False, id="warm-cache-no-tree-listing"),
+        pytest.param(
+            ["config.json", "model.safetensors", "tokenizer.json"],
+            False,
+            id="warm-cache-complete-tree-listing",
+        ),
+        pytest.param(
+            ["config.json", "model.safetensors", "tokenizer.json", "extra.bin"],
+            True,
+            id="incomplete-tree-listing",
+        ),
+    ],
+)
+def test_local_weights_prefers_warm_cache(
+    tmp_path, monkeypatch, tree_files, expect_error
+):
+    import httpx
+    from huggingface_hub import HfApi, constants
+    from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
+
+    files = ["config.json", "model.safetensors", "tokenizer.json"]
+    commit = "a" * 40
+    # Cache layout as left by transformers' hf_hub_download.
+    tmp_path = tmp_path.resolve()  # snapshot_download returns resolved paths
+    repo_dir = tmp_path / "models--fake-org--fake-model"
+    snapshot = repo_dir / "snapshots" / commit
+    snapshot.mkdir(parents=True)
+    for name in files:
+        (snapshot / name).write_text("{}")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text(commit)
+    if tree_files is not None:
+        # trees/<commit>.json as written by snapshot_download (format_version 1).
+        listing = {f: {"size": 2, "blob_id": "b" * 40} for f in tree_files}
+        (repo_dir / "trees").mkdir()
+        (repo_dir / "trees" / f"{commit}.json").write_text(
+            json.dumps({"format_version": 1, "files": listing})
+        )
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    hub_calls = []
+
+    def rate_limited(self, *args, **kwargs):
+        url = "http://127.0.0.1:9/api/models/fake-org/fake-model"
+        hub_calls.append(url)
+        response = httpx.Response(429, request=httpx.Request("GET", url))
+        raise HfHubHTTPError("429 Too Many Requests", response=response)
+
+    monkeypatch.setattr(HfApi, "repo_info", rate_limited)
+    monkeypatch.setattr(HfApi, "list_repo_tree", rate_limited)
+
+    if expect_error:
+        with pytest.raises(LocalEntryNotFoundError):
+            _local_weights("fake-org/fake-model")
+        assert hub_calls
+        return
+
+    result = _local_weights("fake-org/fake-model")
+    assert Path(result) == snapshot
+    assert sorted(p.name for p in Path(result).iterdir()) == sorted(files)
+    assert hub_calls == []
